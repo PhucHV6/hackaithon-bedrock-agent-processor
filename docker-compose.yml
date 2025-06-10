@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  bedrock-flows-processor:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      - AWS_DEFAULT_REGION=us-west-2
+      # Uncomment and set these if you want to use environment variables for AWS creds
+      # - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      # - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    volumes:
+      # Mount AWS credentials (optional, if using local AWS config)
+      - ~/.aws:/root/.aws:ro
+      # Mount for development (uncomment for live code changes)
+      # - ./streamlit_app.py:/app/streamlit_app.py
+    restart: unless-stopped
+    container_name: bedrock-agents-web
