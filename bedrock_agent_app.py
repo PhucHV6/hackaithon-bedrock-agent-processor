@@ -680,18 +680,6 @@ def display_agents_section():
             # Get detailed agent information
             agent_details = st.session_state.bedrock_client.get_agent_details(agent_id)
             
-            # Quick Status Overview
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                status = agent_details.get('agentStatus', 'Unknown')
-                status_color = "green" if status == "Active" else "orange"
-                st.markdown(f"**Status:** <span style='color: {status_color}'>{status}</span>", unsafe_allow_html=True)
-            
-            with col2:
-                model = agent_details.get('foundationModel', 'Unknown')
-                st.markdown(f"**Model:** `{model}`")
-            
             # Display detailed information
             display_agent_details(agent_name, agent_details)
             
@@ -1016,10 +1004,6 @@ def display_smart_agent_result(agent_result: Dict[str, Any]):
     # Display the main agent response
     st.markdown("### 🤖 Agent Response")
     display_content_with_formatting(completion)
-    
-    # Show if agent is asking questions
-    if st.session_state.waiting_for_user_input:
-        st.info("💭 The agent has questions - please see above and respond below!")
     
     # Show citations if available
     if agent_result.get('citations'):
