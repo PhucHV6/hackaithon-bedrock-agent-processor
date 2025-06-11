@@ -582,68 +582,113 @@ def init_session_state():
         st.session_state.execution_history = []
     if 'processed_file' not in st.session_state:
         st.session_state.processed_file = None
+    if 'chat_messages' not in st.session_state:
+        st.session_state.chat_messages = []
+    if 'chat_input_key' not in st.session_state:
+        st.session_state.chat_input_key = 0
+    if 'chat_session_id' not in st.session_state:
+        import uuid
+        st.session_state.chat_session_id = str(uuid.uuid4())
+    if 'processing_message' not in st.session_state:
+        st.session_state.processing_message = None
+    if 'needs_processing' not in st.session_state:
+        st.session_state.needs_processing = False
 
 def setup_sidebar():
-    """Setup sidebar for AWS configuration"""
-    st.sidebar.title("🔧 AWS Configuration")
-    
-    # AWS Region
-    region = st.sidebar.selectbox(
-        "AWS Region",
-        ["us-west-2", "us-east-1", "eu-west-1", "ap-southeast-1"],
-        index=0,
-        help="Select the region where your Bedrock Agent is deployed"
-    )
-    
-    # Credentials input
-    st.sidebar.subheader("AWS Credentials")
-    cred_method = st.sidebar.radio(
-        "Authentication Method",
-        ["Use Default Credentials", "Enter Credentials Manually"]
-    )
-    
-    aws_access_key = None
-    aws_secret_key = None
-    
-    if cred_method == "Enter Credentials Manually":
-        aws_access_key = st.sidebar.text_input("AWS Access Key ID", type="password")
-        aws_secret_key = st.sidebar.text_input("AWS Secret Access Key", type="password")
-    
-    # Connect button
-    if st.sidebar.button("🔌 Connect to AWS"):
-        try:
-            with st.spinner("Connecting to AWS Bedrock Agents..."):
-                client = EnhancedBedrockAgentClient(
-                    region_name=region,
-                    aws_access_key_id=aws_access_key,
-                    aws_secret_access_key=aws_secret_key
-                )
+    """Setup sidebar for AWS configuration and navigation"""
+    if 'is_logged_in' not in st.session_state:
+        st.session_state.is_logged_in = False
+
+    if not st.session_state.is_logged_in:
+        st.sidebar.title("🔧 AWS Configuration")
+        
+        # AWS Region
+        region = st.sidebar.selectbox(
+            "AWS Region",
+            ["us-west-2", "us-east-1", "eu-west-1", "ap-southeast-1"],
+            index=0,
+            help="Select the region where your Bedrock Agent is deployed"
+        )
+        
+        # Credentials input
+        st.sidebar.subheader("AWS Credentials")
+        cred_method = st.sidebar.radio(
+            "Authentication Method",
+            ["Use Default Credentials", "Enter Credentials Manually"]
+        )
+        
+        aws_access_key = None
+        aws_secret_key = None
+        
+        if cred_method == "Enter Credentials Manually":
+            aws_access_key = st.sidebar.text_input("AWS Access Key ID", type="password")
+            aws_secret_key = st.sidebar.text_input("AWS Secret Access Key", type="password")
+        
+        # Connect button
+        if st.sidebar.button("🔌 Connect to AWS"):
+            try:
+                with st.spinner("Connecting to AWS Bedrock Agents..."):
+                    client = EnhancedBedrockAgentClient(
+                        region_name=region,
+                        aws_access_key_id=aws_access_key,
+                        aws_secret_access_key=aws_secret_key
+                    )
+                    
+                    # Test the connection by listing agents
+                    agents = client.list_agents()
+                    
+                    st.session_state.bedrock_client = client
+                    st.session_state.agents = agents
+                    st.session_state.is_logged_in = True
+
+                    # Only set initial agent and alias if none selected
+                    if not st.session_state.selected_agent and agents:
+                        first_agent = agents[0]
+                        aliases = client.list_agent_aliases(first_agent['agentId'])
+                        if aliases:
+                            # Sort aliases by creation date (newest first)
+                            sorted_aliases = sorted(aliases, 
+                                key=lambda x: x.get('lastUpdatedDateTime', x.get('creationDateTime', '')), 
+                                reverse=True)
+                            st.session_state.chat_alias_id = sorted_aliases[0]['agentAliasId']
+                            st.session_state.selected_agent = first_agent
+                    
+                    st.sidebar.success("✅ Connected successfully!")
+                    st.rerun()
                 
-                # Test the connection by listing agents
-                agents = client.list_agents()
+            except Exception as e:
+                error_msg = str(e)
+                st.sidebar.error(f"❌ Connection failed: {error_msg}")
                 
-                st.session_state.bedrock_client = client
-                st.session_state.agents = agents
-                
-            st.sidebar.success("✅ Connected successfully!")
-            st.sidebar.info(f"Found {len(agents)} agents in your account")
+                # Provide helpful debugging information
+                if "credentials" in error_msg.lower():
+                    st.sidebar.info("💡 Tip: Check your AWS credentials and permissions")
+                elif "region" in error_msg.lower():
+                    st.sidebar.info("💡 Tip: Verify the selected region supports Bedrock Agents")
+                elif "access denied" in error_msg.lower():
+                    st.sidebar.info("💡 Tip: Ensure your IAM user/role has Bedrock permissions")
+    else:
+        # Show navigation menu when logged in
+        st.sidebar.title("🤖 Navigation")
+        
+        # Show current connection info
+        st.sidebar.success(f"✅ Connected to {st.session_state.bedrock_client.region_name}")
+        
+        # Navigation menu
+        selected_page = st.sidebar.radio(
+            "Go to",
+            ["🤖 Agents", "📁 File Upload", "💬 Chat", "📈 History"]
+        )
+        
+        # Logout button
+        if st.sidebar.button("🚪 Logout"):
+            # Clear session state
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
             st.rerun()
-            
-        except Exception as e:
-            error_msg = str(e)
-            st.sidebar.error(f"❌ Connection failed: {error_msg}")
-            
-            # Provide helpful debugging information
-            if "credentials" in error_msg.lower():
-                st.sidebar.info("💡 Tip: Check your AWS credentials and permissions")
-            elif "region" in error_msg.lower():
-                st.sidebar.info("💡 Tip: Verify the selected region supports Bedrock Agents")
-            elif "access denied" in error_msg.lower():
-                st.sidebar.info("💡 Tip: Ensure your IAM user/role has Bedrock permissions")
-    
-    # Debug section (expandable)
-    with st.sidebar.expander("🔍 Debug Information"):
-        if st.session_state.bedrock_client:
+        
+        # Debug section (expandable)
+        with st.sidebar.expander("🔍 Debug Information"):
             st.write("**Connection Status:** ✅ Connected")
             st.write(f"**Region:** {st.session_state.bedrock_client.region_name}")
             
@@ -652,10 +697,10 @@ def setup_sidebar():
                     st.success("Connection test passed!")
                 else:
                     st.error("Connection test failed!")
-        else:
-            st.write("**Connection Status:** ❌ Not connected")
+        
+        return selected_page
     
-    return st.session_state.bedrock_client
+    return None
 
 def display_agents_section():
     """Display available agents section with detailed agent analysis"""
@@ -667,15 +712,165 @@ def display_agents_section():
     
     # Create agent selection
     agent_options = [f"{agent['agentName']} ({agent['agentId']})" for agent in st.session_state.agents]
-    selected_agent_option = st.selectbox("Select an Agent", agent_options)
     
-    if selected_agent_option:
+    # Find current agent index
+    current_index = 0
+    if st.session_state.selected_agent:
+        current_index = next(
+            (i for i, opt in enumerate(agent_options) 
+             if st.session_state.selected_agent['agentId'] in opt),
+            0
+        )
+    
+    # Track previous selection
+    if 'previous_agent_selection' not in st.session_state:
+        st.session_state.previous_agent_selection = agent_options[current_index]
+    
+    selected_agent_option = st.selectbox(
+        "Select an Agent",
+        agent_options,
+        index=current_index,
+        key="agent_selection"
+    )
+    
+    # Only update if selection changed
+    if selected_agent_option != st.session_state.previous_agent_selection:
+        st.session_state.previous_agent_selection = selected_agent_option
         # Extract agent ID from selection
         agent_id = selected_agent_option.split('(')[-1].strip(')')
         selected_agent = next(agent for agent in st.session_state.agents if agent['agentId'] == agent_id)
+        previous_agent_name = st.session_state.selected_agent['agentName'] if st.session_state.selected_agent else None
         st.session_state.selected_agent = selected_agent
-        agent_name = selected_agent['agentName']
         
+        # Add context message about agent change
+        if previous_agent_name and st.session_state.chat_messages:
+            context_msg = {
+                "role": "system",
+                "content": f"Note: Switching from agent '{previous_agent_name}' to '{selected_agent['agentName']}'. Previous conversation context is maintained.",
+                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                "is_context": True
+            }
+            st.session_state.chat_messages.append(context_msg)
+        
+        st.rerun()
+
+    if selected_agent_option:
+        # Extract agent ID from selection
+        agent_id = selected_agent_option.split('(')[-1].strip(')')
+        if not st.session_state.selected_agent or st.session_state.selected_agent['agentId'] != agent_id:
+            selected_agent = next(agent for agent in st.session_state.agents if agent['agentId'] == agent_id)
+            st.session_state.selected_agent = selected_agent
+        agent_name = st.session_state.selected_agent['agentName']
+
+        # Load agent aliases and select newest by default
+        try:
+            aliases = st.session_state.bedrock_client.list_agent_aliases(agent_id)
+            st.session_state.agent_aliases = aliases
+            
+            if aliases:
+                # Sort aliases by creation date (newest first)
+                sorted_aliases = sorted(aliases, 
+                    key=lambda x: x.get('lastUpdatedDateTime', x.get('creationDateTime', '')), 
+                    reverse=True)
+                newest_alias = sorted_aliases[0]
+                
+                # Initialize use_latest in session state if not present
+                if 'use_latest_alias' not in st.session_state:
+                    st.session_state.use_latest_alias = True
+                    st.session_state.chat_alias_id = newest_alias['agentAliasId']
+                
+                # Add toggle for testing different aliases
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.info(f"🔄 Latest alias: {newest_alias['agentAliasName']}")
+                with col2:
+                    # Handle toggle state change
+                    previous_state = st.session_state.use_latest_alias
+                    current_state = st.toggle(
+                        "Use Latest Alias",
+                        value=previous_state,
+                        help="Toggle to test different aliases",
+                        key="use_latest_toggle"
+                    )
+                    
+                    # If state changed, update and rerun
+                    if current_state != previous_state:
+                        st.session_state.use_latest_alias = current_state
+                        if current_state:  # If switching to latest
+                            st.session_state.chat_alias_id = newest_alias['agentAliasId']
+                        st.rerun()
+                
+                if st.session_state.use_latest_alias:
+                    if st.session_state.chat_alias_id != newest_alias['agentAliasId']:
+                        st.session_state.chat_alias_id = newest_alias['agentAliasId']
+                else:
+                    alias_options = [f"{alias['agentAliasName']} ({alias['agentAliasId']})" for alias in aliases]
+                    # Find current index for the selectbox
+                    current_index = 0
+                    if st.session_state.chat_alias_id:
+                        current_index = next(
+                            (i for i, opt in enumerate(alias_options) 
+                             if st.session_state.chat_alias_id in opt),
+                            0
+                        )
+                    
+                    # Handle alias selection change
+                    if 'previous_alias_selection' not in st.session_state:
+                        st.session_state.previous_alias_selection = alias_options[current_index]
+                    
+                    selected_alias_option = st.selectbox(
+                        "Select an alias for testing:",
+                        alias_options,
+                        index=current_index,
+                        key="agent_section_alias"
+                    )
+                    
+                    # If selection changed, update and rerun
+                    if selected_alias_option != st.session_state.previous_alias_selection:
+                        st.session_state.previous_alias_selection = selected_alias_option
+                        selected_alias_id = selected_alias_option.split('(')[-1].strip(')')
+                        if st.session_state.chat_alias_id != selected_alias_id:
+                            st.session_state.chat_alias_id = selected_alias_id
+                            st.rerun()
+            else:
+                st.warning("No aliases available. Using version identifiers.")
+                if 'use_version' not in st.session_state:
+                    st.session_state.use_version = True
+                    st.session_state.chat_alias_id = "DRAFT"
+                
+                # Handle version toggle state change
+                previous_version_state = st.session_state.use_version
+                current_version_state = st.checkbox(
+                    "Use agent version instead of alias",
+                    value=previous_version_state,
+                    key="use_version_toggle"
+                )
+                
+                # If version toggle state changed, update and rerun
+                if current_version_state != previous_version_state:
+                    st.session_state.use_version = current_version_state
+                    if current_version_state:
+                        st.session_state.chat_alias_id = "DRAFT"
+                    else:
+                        st.session_state.chat_alias_id = None
+                    st.rerun()
+                
+                if st.session_state.use_version:
+                    version_input = st.text_input(
+                        "Version:",
+                        value=st.session_state.chat_alias_id or "DRAFT",
+                        key="chat_version"
+                    )
+                    if st.session_state.chat_alias_id != version_input:
+                        st.session_state.chat_alias_id = version_input
+                        st.rerun()
+                else:
+                    st.session_state.chat_alias_id = None
+                
+        except Exception as e:
+            st.error(f"Error loading agent aliases: {str(e)}")
+        
+        # Display detailed agent information
         try:
             # Get detailed agent information
             agent_details = st.session_state.bedrock_client.get_agent_details(agent_id)
@@ -826,27 +1021,10 @@ def display_file_upload_section():
 
 def execute_smart_chat_agent(user_message: str, file_data: Optional[Dict[str, Any]] = None):
     """Execute agent with smart conversation context"""
-    if not st.session_state.chat_alias_id:
-        st.error("Please select an agent alias or version first")
-        return
-    
     # Generate session ID if not exists
     if 'chat_session_id' not in st.session_state:
         import uuid
         st.session_state.chat_session_id = str(uuid.uuid4())
-    
-    # Add user message to chat
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    user_msg = {
-        "role": "user",
-        "content": user_message,
-        "timestamp": timestamp,
-        "has_file": bool(file_data),
-        "file_name": file_data['file_name'] if file_data else None,
-        "file_data": file_data,
-        "is_follow_up": len(st.session_state.chat_messages) > 0
-    }
-    st.session_state.chat_messages.append(user_msg)
     
     # Create containers for progress tracking
     progress_container = st.container()
@@ -865,7 +1043,46 @@ def execute_smart_chat_agent(user_message: str, file_data: Optional[Dict[str, An
             progress_bar.progress(25)
             
             # Pass conversation history for context
-            conversation_history = st.session_state.chat_messages[:-1]  # Exclude current message
+            conversation_history = st.session_state.chat_messages  # Include current message
+            
+            # Manage conversation history length
+            MAX_MESSAGES = 20  # Adjust based on typical message length
+            if len(conversation_history) > MAX_MESSAGES:
+                # Keep the first message (could be file context) and most recent messages
+                conversation_history = [conversation_history[0]] + conversation_history[-MAX_MESSAGES:]
+                summary_msg = {
+                    "role": "system",
+                    "content": f"Note: The conversation is long. Showing initial context and the last {MAX_MESSAGES} messages.",
+                    "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    "is_context": True
+                }
+                conversation_history.insert(1, summary_msg)
+            
+            # Add agent context to the input
+            agent_context = (
+                f"Previous conversation history is available. "
+                f"You are agent '{st.session_state.selected_agent['agentName']}'. "
+                f"Please review the conversation history and continue assisting based on the context."
+            )
+            
+            # Calculate approximate token count for context management
+            total_text = "\n".join([msg.get("content", "") for msg in conversation_history])
+            approx_tokens = len(total_text.split()) * 1.3  # Rough estimation
+            
+            if approx_tokens > 150000:  # Leave room for response
+                st.warning("⚠️ Conversation is very long. Summarizing history to maintain performance.")
+                # Keep essential context
+                conversation_history = [
+                    conversation_history[0],  # First message (might be file context)
+                    {
+                        "role": "system",
+                        "content": "Note: The conversation history has been summarized due to length.",
+                        "is_context": True
+                    },
+                    *conversation_history[-10:]  # Last 10 messages
+                ]
+            
+            enhanced_input = f"{agent_context}\n\nUser's message: {user_message}"
             
             if file_data and len(st.session_state.chat_messages) == 1:
                 # First message with file
@@ -873,7 +1090,7 @@ def execute_smart_chat_agent(user_message: str, file_data: Optional[Dict[str, An
                     agent_id=st.session_state.selected_agent['agentId'],
                     agent_alias_id=st.session_state.chat_alias_id,
                     session_id=st.session_state.chat_session_id,
-                    input_text=user_message,
+                    input_text=enhanced_input,
                     file_data=file_data
                 )
             else:
@@ -882,7 +1099,7 @@ def execute_smart_chat_agent(user_message: str, file_data: Optional[Dict[str, An
                     agent_id=st.session_state.selected_agent['agentId'],
                     agent_alias_id=st.session_state.chat_alias_id,
                     session_id=st.session_state.chat_session_id,
-                    input_text=user_message,
+                    input_text=enhanced_input,
                     conversation_history=conversation_history
                 )
             
@@ -932,6 +1149,28 @@ def execute_smart_chat_agent(user_message: str, file_data: Optional[Dict[str, An
             "detected_questions": detected_questions
         }
         st.session_state.chat_messages.append(assistant_msg)
+        
+        # Save conversation to history
+        if 'execution_history' not in st.session_state:
+            st.session_state.execution_history = []
+            
+        history_entry = {
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'agent_name': st.session_state.selected_agent['agentName'],
+            'agent_id': st.session_state.selected_agent['agentId'],
+            'alias_name': alias_name,
+            'session_id': st.session_state.chat_session_id,
+            'conversation': st.session_state.chat_messages.copy(),
+            'file_info': file_data['file_name'] if file_data else 'Manual Input',
+            'result': result,
+            'execution_time': execution_time,
+            'inputs': {
+                'user_message': user_message,
+                'file_data': file_data,
+                'conversation_history': conversation_history
+            }
+        }
+        st.session_state.execution_history.append(history_entry)
         
     except Exception as e:
         error_msg = str(e)
@@ -1002,7 +1241,7 @@ def display_smart_agent_result(agent_result: Dict[str, Any]):
             st.session_state.detected_agent_questions = []
     
     # Display the main agent response
-    st.markdown("### 🤖 Agent Response")
+    st.markdown("#### 🤖 Agent Response")
     display_content_with_formatting(completion)
     
     # Show citations if available
@@ -1096,12 +1335,24 @@ def display_smart_agent_result(agent_result: Dict[str, Any]):
 
 def display_chat_section():
     """Display intelligent conversational chat interface with agent"""
-    st.header("💬 Chat with Agent")
+    # Chat header with New Chat button and warning
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.header("💬 Chat with Agent")
+    with col2:
+        if st.button("🔄 New Chat", help="Start a new conversation"):
+            st.session_state.chat_messages = []
+            st.session_state.chat_context = {}
+            import uuid
+            st.session_state.chat_session_id = str(uuid.uuid4())
+            st.session_state.waiting_for_user_input = False
+            st.session_state.detected_agent_questions = []
+            st.rerun()
     
     if not st.session_state.selected_agent:
         st.info("Please select an agent first.")
         return
-    
+
     # Initialize chat-specific session state
     if 'chat_messages' not in st.session_state:
         st.session_state.chat_messages = []
@@ -1117,37 +1368,6 @@ def display_chat_section():
     if 'detected_agent_questions' not in st.session_state:
         st.session_state.detected_agent_questions = []
     
-    # Agent alias selection
-    col1, col2 = st.columns([3, 1])
-    
-    with col1:
-        if not st.session_state.agent_aliases:
-            st.warning("No aliases available. Using version identifiers.")
-            use_version = st.checkbox("Use agent version instead of alias", value=True)
-            if use_version:
-                version_input = st.text_input("Version:", value="TSTALIASID", key="chat_version")
-                st.session_state.chat_alias_id = version_input
-            else:
-                st.session_state.chat_alias_id = None
-        else:
-            alias_options = [""] + [f"{alias['agentAliasName']} ({alias['agentAliasId']})" for alias in st.session_state.agent_aliases]
-            selected_alias_option = st.selectbox("Select Agent Alias:", alias_options, key="chat_alias")
-            
-            if selected_alias_option:
-                st.session_state.chat_alias_id = selected_alias_option.split('(')[-1].strip(')')
-            else:
-                st.session_state.chat_alias_id = None
-    
-    with col2:
-        if st.button("🗑️ Clear Chat", help="Clear conversation history"):
-            st.session_state.chat_messages = []
-            st.session_state.chat_context = {}
-            import uuid
-            st.session_state.chat_session_id = str(uuid.uuid4())
-            st.session_state.waiting_for_user_input = False
-            st.session_state.detected_agent_questions = []
-            st.rerun()
-    
     # Display chat messages
     chat_container = st.container()
     with chat_container:
@@ -1155,6 +1375,40 @@ def display_chat_section():
             st.info("👋 Start a conversation! Upload files or ask questions directly.")
         else:
             for i, message in enumerate(st.session_state.chat_messages):
+                if message.get("is_context"):
+                    # Display system context messages in an elegant way
+                    if "changing agent" in message['content'].lower():
+                        st.markdown("""
+                        <div style='text-align: center; padding: 10px; margin: 10px 0;'>
+                            <div style='color: #666; font-size: 0.9em;'>
+                                🔄 Agent Transition
+                            </div>
+                            <div style='color: #1f77b4; font-size: 0.85em; margin-top: 5px;'>
+                                {}
+                            </div>
+                        </div>
+                        """.format(message['content']), unsafe_allow_html=True)
+                    elif "conversation is long" in message['content'].lower():
+                        st.markdown("""
+                        <div style='text-align: center; padding: 10px; margin: 10px 0;'>
+                            <div style='color: #666; font-size: 0.9em;'>
+                                📜 Conversation History Note
+                            </div>
+                            <div style='color: #666; font-size: 0.85em; margin-top: 5px;'>
+                                {}
+                            </div>
+                        </div>
+                        """.format(message['content']), unsafe_allow_html=True)
+                    else:
+                        st.markdown("""
+                        <div style='text-align: center; padding: 10px; margin: 10px 0;'>
+                            <div style='color: #666; font-size: 0.85em;'>
+                                {}
+                            </div>
+                        </div>
+                        """.format(message['content']), unsafe_allow_html=True)
+                    continue
+                
                 with st.chat_message(message["role"]):
                     if message["role"] == "user":
                         st.write(message["content"])
@@ -1191,42 +1445,90 @@ def display_chat_section():
                     else:
                         st.session_state.chat_context['current_file'] = file_data
                         st.success("File context added!")
-    
+
     # Input area
     placeholder = "Type your message and press Enter to send..."
     if st.session_state.waiting_for_user_input:
         placeholder = "Answer the agent's questions above..."
     
-    # Use text_area with a key for Enter to send
-    user_input = st.text_area(
-        "Message",
-        key=f"chat_input_{len(st.session_state.chat_messages)}",
-        placeholder=placeholder,
-        height=100,
-        help="Press Enter to send, Shift+Enter for new line"
-    )
+    # Initialize the input key in session state if not present
+    if 'chat_input_key' not in st.session_state:
+        st.session_state.chat_input_key = 0
     
-    # Process input when Enter is pressed (without Shift)
-    if user_input and user_input.endswith('\n') and not user_input.endswith('\n\n'):
-        user_input = user_input.rstrip()  # Remove trailing newline
-        if user_input:
+    # Create columns for input and send button
+    input_col, button_col = st.columns([6, 1])
+    
+    with input_col:
+        # Use text_area with a key for Enter to send
+        user_input = st.text_area(
+            "Message",
+            key=f"chat_input_{st.session_state.chat_input_key}",
+            placeholder=placeholder,
+            height=100,
+            label_visibility="collapsed"
+        )
+    
+    with button_col:
+        send_button = st.button("Send", use_container_width=True)
+    
+    # Process input when either Enter is pressed or Send button is clicked
+    if (user_input and user_input.strip() and (
+        (user_input.endswith('\n') and not user_input.endswith('\n\n')) or 
+        send_button
+    )):
+        # Clean the input
+        cleaned_input = user_input.strip()
+        if cleaned_input:
+            # Add user message to chat immediately
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            user_msg = {
+                "role": "user",
+                "content": cleaned_input,
+                "timestamp": timestamp,
+                "has_file": bool(st.session_state.chat_context.get('current_file')),
+                "file_name": st.session_state.chat_context.get('current_file', {}).get('file_name'),
+                "file_data": st.session_state.chat_context.get('current_file'),
+                "is_follow_up": len(st.session_state.chat_messages) > 0
+            }
+            st.session_state.chat_messages.append(user_msg)
+            
+            # Show processing warning
+            st.warning("⚠️ Please wait for the agent to respond. Switching tabs will interrupt the agent's processing.", icon="⚠️")
+            
+            # Execute the agent immediately
             execute_smart_chat_agent(
-                user_input,
+                cleaned_input,
                 st.session_state.chat_context.get('current_file')
             )
+            
+            # Clear the input box
+            st.session_state.chat_input_key += 1
             st.rerun()
     
-    # Show status messages
-    if not st.session_state.chat_alias_id:
-        st.error("⚠️ Please select an agent alias or version first")
-    elif st.session_state.waiting_for_user_input:
-        st.info("💭 Please answer the agent's questions above")
+    # Check if we need to process a message
+    if st.session_state.needs_processing and st.session_state.processing_message:
+        # Process the message
+        execute_smart_chat_agent(
+            st.session_state.processing_message,
+            st.session_state.chat_context.get('current_file')
+        )
+        # Clear processing state
+        st.session_state.needs_processing = False
+        st.session_state.processing_message = None
 
 def display_content_with_formatting(content_str: str):
     """Display content with intelligent formatting"""
     if not content_str or content_str.strip() == "":
         st.info("No content returned")
         return
+    
+    # Pre-process the content string
+    # Replace \n with actual newlines
+    content_str = content_str.replace('\\n', '\n')
+    # Replace \t with actual tabs
+    content_str = content_str.replace('\\t', '\t')
+    # Handle other special characters
+    content_str = content_str.replace('\\r', '\r')
     
     # Try to parse as JSON first
     try:
@@ -1237,15 +1539,22 @@ def display_content_with_formatting(content_str: str):
             st.markdown(str(content_json))
     except (json.JSONDecodeError, TypeError):
         # If not JSON, check if it looks like structured text
-        if any(marker in content_str for marker in ['#', '##', '###', '*', '-', '1.']):
+        if any(marker in content_str for marker in ['#', '##', '###', '*', '-', '1.', '\n-', '\n1.']):
+            # Clean up markdown formatting
+            # Fix numbered lists that might have escaped newlines
+            content_str = re.sub(r'\\n(\d+\.)', r'\n\1', content_str)
+            # Fix bullet points that might have escaped newlines
+            content_str = re.sub(r'\\n-', r'\n-', content_str)
+            # Ensure proper spacing for headers
+            content_str = re.sub(r'\\n(#+)', r'\n\1 ', content_str)
             # Looks like markdown
-            st.markdown(content_str)
+            st.markdown(content_str, unsafe_allow_html=False)
         elif content_str.startswith('{') or content_str.startswith('['):
             # Might be malformed JSON, show in code block
             st.code(content_str, language='json')
         else:
-            # Plain text
-            st.write(content_str)
+            # Plain text with proper newline handling
+            st.text(content_str)
 
 def display_history_section():
     """Display execution history with enhanced filtering"""
@@ -1306,26 +1615,61 @@ def display_history_section():
         if selected_execution is not None:
             record = filtered_history[selected_execution]
             
-            col1, col2 = st.columns(2)
+            # Display conversation
+            st.subheader("💬 Conversation")
+            conversation = record.get('conversation', [])
             
-            with col1:
-                st.subheader("📥 Inputs")
-                st.json(record['inputs'])
+            for msg in conversation:
+                with st.chat_message(msg["role"]):
+                    if msg["role"] == "user":
+                        st.write(msg["content"])
+                        if msg.get("has_file"):
+                            st.caption(f"📎 File: {msg.get('file_name', 'Unknown')}")
+                        if msg.get("timestamp"):
+                            st.caption(f"🕒 {msg['timestamp']}")
+                    else:  # assistant
+                        if msg.get("agent_result"):
+                            display_smart_agent_result(msg["agent_result"])
+                        else:
+                            st.write(msg["content"])
+                        if msg.get("timestamp"):
+                            st.caption(f"🕒 {msg['timestamp']}")
             
-            with col2:
-                st.subheader("📤 Results")
-                result = record['result']
-                if result.get('completion'):
-                    st.markdown("**Agent Response:**")
-                    display_content_with_formatting(result['completion'])
+            # Display metadata
+            with st.expander("📊 Session Details"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Session Information**")
+                    st.write(f"Session ID: `{record['session_id']}`")
+                    st.write(f"Agent: {record['agent_name']}")
+                    st.write(f"Alias: {record['alias_name']}")
+                    st.write(f"Duration: {record['execution_time']:.2f}s")
+                    
+                with col2:
+                    st.markdown("**Input Details**")
+                    st.write(f"Input Type: {record['file_info']}")
+                    if record['inputs'].get('file_data'):
+                        st.write(f"File Type: {record['inputs']['file_data']['file_type']}")
+                        st.write(f"File Size: {len(record['inputs']['file_data']['file_content'])} bytes")
+            
+            # Display technical details
+            with st.expander("🔧 Technical Details"):
+                col1, col2 = st.columns(2)
                 
-                if result.get('citations'):
-                    st.markdown("**Citations:**")
-                    for citation in result['citations']:
-                        st.write(f"- {citation}")
+                with col1:
+                    st.subheader("📥 Inputs")
+                    st.json(record['inputs'])
                 
-                if result.get('trace'):
-                    with st.expander("🔍 Execution Trace"):
+                with col2:
+                    st.subheader("📤 Results")
+                    result = record['result']
+                    if result.get('citations'):
+                        st.markdown("**Citations:**")
+                        for citation in result['citations']:
+                            st.write(f"- {citation}")
+                    
+                    if result.get('trace'):
+                        st.markdown("**Execution Trace:**")
                         st.json(result['trace'])
     else:
         st.info("No records match the selected filters.")
@@ -1345,9 +1689,9 @@ def main():
     init_session_state()
     
     # AWS Configuration section in sidebar
-    client = setup_sidebar()
+    selected_page = setup_sidebar()
     
-    if not client:
+    if not selected_page:
         st.info("👈 Please configure your AWS credentials in the sidebar to get started.")
         
         # Show getting started guide
@@ -1367,6 +1711,16 @@ def main():
             - Use the conversational interface for interactive sessions
             """)
         return
+
+    # Show content based on selected page
+    if selected_page == "🤖 Agents":
+        display_agents_section()
+    elif selected_page == "📁 File Upload":
+        display_file_upload_section()
+    elif selected_page == "💬 Chat":
+        display_chat_section()
+    elif selected_page == "📈 History":
+        display_history_section()
     
     # Show generic info when no agent is selected
     if not st.session_state.selected_agent:
@@ -1387,21 +1741,6 @@ def main():
             - 💬 Conversational interface
             - 🔍 Detailed tracing and debugging
             """)
-    
-    # Main navigation tabs in header
-    tab1, tab2, tab3, tab4 = st.tabs(["🤖 Agents", "📁 File Upload", "💬 Chat", "📈 History"])
-    
-    with tab1:
-        display_agents_section()
-    
-    with tab2:
-        display_file_upload_section()
-    
-    with tab3:
-        display_chat_section()
-    
-    with tab4:
-        display_history_section()
 
 
 if __name__ == "__main__":
