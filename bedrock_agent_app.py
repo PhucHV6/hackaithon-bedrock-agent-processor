@@ -1146,24 +1146,62 @@ def execute_smart_chat_agent(user_message: str, file_data: Optional[Dict[str, An
         if 'execution_history' not in st.session_state:
             st.session_state.execution_history = []
             
-        history_entry = {
-            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'agent_name': st.session_state.selected_agent['agentName'],
-            'agent_id': st.session_state.selected_agent['agentId'],
-            'alias_name': alias_name,
-            'session_id': st.session_state.chat_session_id,
-            'conversation': st.session_state.chat_messages.copy(),
-            'file_info': file_data['file_name'] if file_data else 'Manual Input',
-            'result': result,
-            'execution_time': execution_time,
-            'inputs': {
-                'user_message': user_message,
-                'file_data': file_data,
-                'conversation_history': conversation_history
+        # Create or update the history entry
+        if not st.session_state.execution_history:
+            # First entry in history
+            history_entry = {
+                'timestamp_start': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'timestamp_last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                'session_id': st.session_state.chat_session_id,
+                'conversation': st.session_state.chat_messages.copy(),
+                'agents_used': [{
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'agent_name': st.session_state.selected_agent['agentName'],
+                    'agent_id': st.session_state.selected_agent['agentId'],
+                    'alias_name': alias_name
+                }],
+                'files_processed': [],
+                'execution_times': []
             }
-        }
-        st.session_state.execution_history.append(history_entry)
-        
+            if file_data:
+                history_entry['files_processed'].append({
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'file_info': file_data['file_name'],
+                    'file_type': file_data['file_type']
+                })
+            history_entry['execution_times'].append(execution_time)
+            st.session_state.execution_history.append(history_entry)
+        else:
+            # Update the last history entry
+            current_entry = st.session_state.execution_history[-1]
+            current_entry['timestamp_last_update'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            current_entry['conversation'] = st.session_state.chat_messages.copy()
+            
+            # Add new agent if different from the last one used
+            last_agent = current_entry['agents_used'][-1]
+            if (last_agent['agent_id'] != st.session_state.selected_agent['agentId'] or 
+                last_agent['alias_name'] != alias_name):
+                current_entry['agents_used'].append({
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'agent_name': st.session_state.selected_agent['agentName'],
+                    'agent_id': st.session_state.selected_agent['agentId'],
+                    'alias_name': alias_name
+                })
+            
+            # Add file information if present
+            if file_data:
+                current_entry['files_processed'].append({
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'file_info': file_data['file_name'],
+                    'file_type': file_data['file_type']
+                })
+            current_entry['execution_times'].append(execution_time)
+            
+        # Clear uploaded files even on error
+        st.session_state.uploaded_files = {}
+        st.session_state.total_tokens = 0
+        st.session_state.file_uploader_key += 1  # Force file uploader to reset
+
     except Exception as e:
         error_msg = str(e)
         st.error(f"❌ Error executing smart conversation with agent: {error_msg}")
@@ -1480,12 +1518,39 @@ def display_chat_section():
         st.header("💬 Chat with Agent")
     with col2:
         if st.button("🔄 New Chat", help="Start a new conversation"):
+            # Save current conversation if it exists
+            if st.session_state.chat_messages:
+                # Ensure execution_history exists
+                if 'execution_history' not in st.session_state:
+                    st.session_state.execution_history = []
+                
+                # Only save if this conversation isn't already in history
+                if (not st.session_state.execution_history or 
+                    st.session_state.execution_history[-1]['session_id'] != st.session_state.chat_session_id):
+                    history_entry = {
+                        'timestamp_start': st.session_state.chat_messages[0]['timestamp'] if st.session_state.chat_messages else datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'timestamp_last_update': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'session_id': st.session_state.chat_session_id,
+                        'conversation': st.session_state.chat_messages.copy(),
+                        'agents_used': [{
+                            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            'agent_name': st.session_state.selected_agent['agentName'],
+                            'agent_id': st.session_state.selected_agent['agentId'],
+                            'alias_name': st.session_state.chat_alias_id
+                        }],
+                        'files_processed': [],
+                        'execution_times': []
+                    }
+                    st.session_state.execution_history.append(history_entry)
+            
+            # Clear current chat state
             st.session_state.chat_messages = []
             st.session_state.chat_context = {}
             st.session_state.uploaded_files = {}
             st.session_state.total_tokens = 0
             st.session_state.skipped_files = []
             st.session_state.file_uploader_key += 1
+            # Generate new session ID
             import uuid
             st.session_state.chat_session_id = str(uuid.uuid4())
             st.session_state.waiting_for_user_input = False
@@ -1544,24 +1609,29 @@ def display_chat_section():
     # Input area and send button first
     st.subheader("Send message")
 
-    cols = st.columns([9, 1])
-    
-    with cols[0]:
-        user_input = st.text_area(
-            "Message",
-            key=f"chat_input_{st.session_state.chat_input_key}",
-            placeholder=placeholder,
-            height=100,
-            label_visibility="collapsed"
-        )
+    user_input = st.chat_input(
+        placeholder=placeholder,
+        key=f"chat_input_{st.session_state.chat_input_key}"
+    )
 
-    with cols[1]:
-        send_button = st.button(
-            "Send",
-            key="send_button",
-            type="primary",
-            use_container_width=True
-        )
+    # cols = st.columns([9, 1])
+    
+    # with cols[0]:
+    #     user_input = st.text_area(
+    #         "Message",
+    #         key=f"chat_input_{st.session_state.chat_input_key}",
+    #         placeholder=placeholder,
+    #         height=100,
+    #         label_visibility="collapsed"
+    #     )
+
+    # with cols[1]:
+    #     send_button = st.button(
+    #         "Send",
+    #         key="send_button",
+    #         type="primary",
+    #         use_container_width=True
+    #     )
 
     # File upload expander after input area
     with st.expander("📎 Upload files", expanded=False):
@@ -1615,10 +1685,11 @@ def display_chat_section():
                             st.session_state.skipped_files.append(uploaded_file.name)
 
     # Process input when either Enter is pressed or Send button is clicked
-    if (user_input and user_input.strip() and (
-        (user_input.endswith('\n') and not user_input.endswith('\n\n')) or 
-        send_button
-    )):
+    # if (user_input and user_input.strip() and (
+    #     (user_input.endswith('\n') and not user_input.endswith('\n\n')) or 
+    #     send_button
+    # )):
+    if user_input:
         cleaned_input = user_input.strip()
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
@@ -1704,23 +1775,27 @@ def display_content_with_formatting(content_str: str):
 
 def display_history_section():
     """Display execution history with enhanced filtering"""
-    st.header("📈 Execution History")
+    st.header("📈 Chat History")
     
     if not st.session_state.execution_history:
-        st.info("No execution history available. Execute some agents to see results here.")
+        st.info("No chat history available yet. Start a conversation to see it here.")
         return
     
     # Filters
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        # Filter by agent
-        agent_names = list(set([record.get('agent_name', 'Unknown') for record in st.session_state.execution_history]))
-        selected_agent_filter = st.selectbox("Filter by Agent", ["All"] + agent_names)
-    
-    with col2:
         # Filter by date
         date_range = st.selectbox("Filter by Date", ["All", "Today", "Last 7 days", "Last 30 days"])
+    
+    with col2:
+        # Filter by agent
+        all_agents = []
+        for entry in st.session_state.execution_history:
+            for agent in entry['agents_used']:
+                all_agents.append(agent['agent_name'])
+        unique_agents = ["All"] + list(set(all_agents))
+        selected_agent_filter = st.selectbox("Filter by Agent", unique_agents)
     
     with col3:
         # Clear history
@@ -1728,49 +1803,47 @@ def display_history_section():
             st.session_state.execution_history = []
             st.rerun()
     
-    # Apply filters
-    filtered_history = st.session_state.execution_history
-    
-    if selected_agent_filter != "All":
-        filtered_history = [r for r in filtered_history if r.get('agent_name') == selected_agent_filter]
-    
-    # Display history table
-    if filtered_history:
-        history_data = []
-        for record in filtered_history:
-            status = "✅ Success" if record['result'].get('completion_reason') == 'SUCCESS' else "⚠️ Other"
-            history_data.append({
-                'Timestamp': record['timestamp'],
-                'Agent': record.get('agent_name', 'Unknown'),
-                'Alias': record['alias_name'],
-                'File': record.get('file_info', 'Manual Input'),
-                'Status': status
-            })
-        
-        history_df = pd.DataFrame(history_data)
-        st.dataframe(history_df, use_container_width=True)
-        
-        # Detailed view
-        st.subheader("📋 Detailed Results")
-        selected_execution = st.selectbox(
-            "Select execution to view details:",
-            range(len(filtered_history)),
-            format_func=lambda x: f"{filtered_history[x]['timestamp']} - {filtered_history[x].get('agent_name', 'Unknown')}"
-        )
-        
-        if selected_execution is not None:
-            record = filtered_history[selected_execution]
+    # Display history entries
+    for idx, entry in enumerate(st.session_state.execution_history):
+        with st.expander(f"💬 Chat Session {idx + 1} - Started: {entry['timestamp_start']}", expanded=idx == len(st.session_state.execution_history) - 1):
+            # Session info
+            st.markdown("#### Session Information")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**Started:** {entry['timestamp_start']}")
+                st.write(f"**Last Updated:** {entry['timestamp_last_update']}")
+                st.write(f"**Session ID:** `{entry['session_id']}`")
+            with col2:
+                st.write(f"**Messages:** {len(entry['conversation'])}")
+                st.write(f"**Files Processed:** {len(entry['files_processed'])}")
+                avg_time = sum(entry['execution_times']) / len(entry['execution_times']) if entry['execution_times'] else 0
+                st.write(f"**Average Response Time:** {avg_time:.2f}s")
+            
+            # Agents used
+            st.markdown("#### 🤖 Agents Used")
+            for agent in entry['agents_used']:
+                st.markdown(f"""
+                    - **{agent['agent_name']}** ({agent['alias_name']})
+                    - Started using at: {agent['timestamp']}
+                """)
+            
+            # Files processed
+            if entry['files_processed']:
+                st.markdown("#### 📁 Files Processed")
+                for file in entry['files_processed']:
+                    st.markdown(f"""
+                        - **{file['file_info']}** ({file['file_type']})
+                        - Processed at: {file['timestamp']}
+                    """)
             
             # Display conversation
-            st.subheader("💬 Conversation")
-            conversation = record.get('conversation', [])
-            
-            for msg in conversation:
+            st.markdown("#### 💬 Conversation")
+            for msg in entry['conversation']:
                 with st.chat_message(msg["role"]):
                     if msg["role"] == "user":
                         st.write(msg["content"])
                         if msg.get("has_file"):
-                            st.caption(f"📎 File: {msg.get('file_name', 'Unknown')}")
+                            st.caption(f"📎 Files: {', '.join(msg.get('file_names', []))}")
                         if msg.get("timestamp"):
                             st.caption(f"🕒 {msg['timestamp']}")
                     else:  # assistant
@@ -1780,45 +1853,6 @@ def display_history_section():
                             st.write(msg["content"])
                         if msg.get("timestamp"):
                             st.caption(f"🕒 {msg['timestamp']}")
-            
-            # Display metadata
-            with st.expander("📊 Session Details"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("**Session Information**")
-                    st.write(f"Session ID: `{record['session_id']}`")
-                    st.write(f"Agent: {record['agent_name']}")
-                    st.write(f"Alias: {record['alias_name']}")
-                    st.write(f"Duration: {record['execution_time']:.2f}s")
-                    
-                with col2:
-                    st.markdown("**Input Details**")
-                    st.write(f"Input Type: {record['file_info']}")
-                    if record['inputs'].get('file_data'):
-                        st.write(f"File Type: {record['inputs']['file_data']['file_type']}")
-                        st.write(f"File Size: {len(record['inputs']['file_data']['file_content'])} bytes")
-            
-            # Display technical details
-            with st.expander("🔧 Technical Details"):
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.subheader("📥 Inputs")
-                    st.json(record['inputs'])
-                
-                with col2:
-                    st.subheader("📤 Results")
-                    result = record['result']
-                    if result.get('citations'):
-                        st.markdown("**Citations:**")
-                        for citation in result['citations']:
-                            st.write(f"- {citation}")
-                    
-                    if result.get('trace'):
-                        st.markdown("**Execution Trace:**")
-                        st.json(result['trace'])
-    else:
-        st.info("No records match the selected filters.")
 
 def main():
     """Main Streamlit application"""
