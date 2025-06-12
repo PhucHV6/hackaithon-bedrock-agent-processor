@@ -14,6 +14,7 @@ import PyPDF2
 import csv
 from io import StringIO
 import re
+import tiktoken
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -593,11 +594,23 @@ def init_session_state():
         st.session_state.processing_message = None
     if 'needs_processing' not in st.session_state:
         st.session_state.needs_processing = False
+    if 'tiktoken_enc' not in st.session_state:
+        try:
+            st.session_state.tiktoken_enc = tiktoken.get_encoding("cl100k_base")
+        except:
+            st.session_state.tiktoken_enc = None
 
 def setup_sidebar():
     """Setup sidebar for AWS configuration and navigation"""
     if 'is_logged_in' not in st.session_state:
         st.session_state.is_logged_in = False
+
+    # Initialize selected page in session state if not exists
+    if 'selected_page' not in st.session_state:
+        st.session_state.selected_page = "🤖 Agents"
+
+    def on_page_change():
+        st.session_state.selected_page = st.session_state.nav_radio
 
     if not st.session_state.is_logged_in:
         st.sidebar.title("🔧 AWS Configuration")
@@ -668,19 +681,41 @@ def setup_sidebar():
                 elif "access denied" in error_msg.lower():
                     st.sidebar.info("💡 Tip: Ensure your IAM user/role has Bedrock permissions")
     else:
-        # Show navigation menu when logged in
-        st.sidebar.title("🤖 Navigation")
-        
         # Show current connection info
         st.sidebar.success(f"✅ Connected to {st.session_state.bedrock_client.region_name}")
         
         # Navigation menu
-        selected_page = st.sidebar.radio(
+        st.sidebar.title("🧭 Navigation")
+        
+        # Navigation radio buttons with custom styling
+        st.markdown("""
+            <style>
+            /* Style for radio buttons in sidebar */
+            .stRadio [role="radiogroup"] {
+                gap: 0.5rem;
+            }
+            .stRadio [data-testid="stMarkdownContainer"] > p {
+                font-size: 1rem;
+                margin: 0;
+            }
+            </style>
+        """, unsafe_allow_html=True)
+        
+        # Use on_change callback for the radio button
+        st.sidebar.radio(
             "Go to",
-            ["🤖 Agents", "📁 File Upload", "💬 Chat", "📈 History"]
+            ["🤖 Agents", "💬 Chat", "📈 History"],
+            key="nav_radio",
+            on_change=on_page_change,
+            index=["🤖 Agents", "💬 Chat", "📈 History"].index(st.session_state.selected_page)
         )
         
-        # Logout button
+        # Show agent info if selected
+        if st.session_state.selected_agent:
+            st.sidebar.success(f"🤖 Selected Agent: {st.session_state.selected_agent['agentName']}")
+        
+        # Logout button at bottom of sidebar
+        st.sidebar.markdown("---")
         if st.sidebar.button("🚪 Logout"):
             # Clear session state
             for key in list(st.session_state.keys()):
@@ -697,10 +732,8 @@ def setup_sidebar():
                     st.success("Connection test passed!")
                 else:
                     st.error("Connection test failed!")
-        
-        return selected_page
     
-    return None
+    return st.session_state.is_logged_in
 
 def display_agents_section():
     """Display available agents section with detailed agent analysis"""
@@ -944,93 +977,47 @@ def display_agent_details(agent_name: str, agent_details: Dict[str, Any]):
         st.markdown("**📝 Agent Instructions**")
         st.code(agent_details['instruction'], language="markdown")
 
-def display_file_upload_section():
-    """Display enhanced file upload section"""
-    st.header("📁 File Upload & Processing")
+def calculate_file_tokens(file_content: str, file_type: str = None) -> int:
+    """Calculate accurate token count using tiktoken
     
-    if not st.session_state.selected_agent:
-        st.info("Please select an agent first.")
-        return
+    Uses OpenAI's tiktoken library for precise token counting, which is the same 
+    tokenizer used by the actual models.
     
-    # File upload
-    uploaded_file = st.file_uploader(
-        "Choose a file to process",
-        type=['txt', 'pdf', 'json', 'csv', 'md'],
-        help="Supported formats: TXT, PDF, JSON, CSV, MD"
-    )
+    Args:
+        file_content: The text content to analyze
+        file_type: Optional file extension (not used since we use model's tokenizer)
     
-    if uploaded_file:
-        # Display file information
-        st.subheader("📄 File Information")
-        col1, col2, col3 = st.columns(3)
+    Returns:
+        Actual token count as would be seen by the model
+    """
+    if not file_content:
+        return 0
         
-        with col1:
-            st.metric("File Name", uploaded_file.name)
-        with col2:
-            st.metric("File Size", f"{uploaded_file.size:,} bytes")
-        with col3:
-            file_type = uploaded_file.name.split('.')[-1].upper()
-            st.metric("File Type", file_type)
-        
-        # Process the file
-        with st.spinner("Processing file..."):
-            file_content = uploaded_file.getvalue()
-            file_processor = FileProcessor()
-            
-            # Determine file type and process accordingly
-            if uploaded_file.name.endswith('.txt'):
-                processed_file = file_processor.process_text_file(file_content, uploaded_file.name)
-            elif uploaded_file.name.endswith('.pdf'):
-                processed_file = file_processor.process_pdf_file(file_content, uploaded_file.name)
-            elif uploaded_file.name.endswith('.json'):
-                processed_file = file_processor.process_json_file(file_content, uploaded_file.name)
-            elif uploaded_file.name.endswith('.csv'):
-                processed_file = file_processor.process_csv_file(file_content, uploaded_file.name)
-            elif uploaded_file.name.endswith('.md'):
-                processed_file = file_processor.process_markdown_file(file_content, uploaded_file.name)
-            else:
-                st.error("Unsupported file type")
-                return
-            
-            if processed_file:
-                st.session_state.processed_file = processed_file
-                
-                # Display file analysis
-                st.subheader("🔍 File Analysis")
-                
-                if processed_file['file_type'] == 'csv':
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.metric("Rows", processed_file['metadata']['row_count'])
-                    with col2:
-                        st.metric("Columns", processed_file['metadata']['column_count'])
-                    with col3:
-                        st.metric("Lines", processed_file['metadata']['line_count'])
-                    
-                    if processed_file['file_type'] == 'markdown' and processed_file['metadata'].get('headers'):
-                        with st.expander("Document Headers"):
-                            for header in processed_file['metadata']['headers']:
-                                st.write(header)
-                
-                # Show content preview
-                with st.expander("📖 Content Preview (First 500 characters)"):
-                    content_preview = processed_file['file_content'][:500]
-                    if len(processed_file['file_content']) > 500:
-                        content_preview += "..."
-                    st.text(content_preview)
+    try:
+        # Use cl100k_base encoding (used by gpt-4, gpt-3.5-turbo, text-embedding-ada-002)
+        enc = tiktoken.get_encoding("cl100k_base")
+        # Get actual token count
+        tokens = enc.encode(file_content)
+        return len(tokens)
+    except Exception as e:
+        # Fallback to approximate counting if tiktoken fails
+        logger.warning(f"Tiktoken encoding failed: {str(e)}. Using fallback estimation.")
+        # Fallback estimation
+        words = len(file_content.split())
+        return int(words * 1.3)  # Rough estimate
 
 def execute_smart_chat_agent(user_message: str, file_data: Optional[Dict[str, Any]] = None):
     """Execute agent with smart conversation context"""
-    # Generate session ID if not exists
-    if 'chat_session_id' not in st.session_state:
-        import uuid
-        st.session_state.chat_session_id = str(uuid.uuid4())
-    
-    # Create containers for progress tracking
-    progress_container = st.container()
-    
-    # Execute agent with conversation context
     try:
+        # Generate session ID if not exists
+        if 'chat_session_id' not in st.session_state:
+            import uuid
+            st.session_state.chat_session_id = str(uuid.uuid4())
+        
+        # Create containers for progress tracking
+        progress_container = st.container()
+        
+        # Execute agent with conversation context
         with progress_container:
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -1084,7 +1071,7 @@ def execute_smart_chat_agent(user_message: str, file_data: Optional[Dict[str, An
             
             enhanced_input = f"{agent_context}\n\nUser's message: {user_message}"
             
-            if file_data and len(st.session_state.chat_messages) == 1:
+            if file_data:
                 # First message with file
                 result = st.session_state.bedrock_client.invoke_agent_with_file(
                     agent_id=st.session_state.selected_agent['agentId'],
@@ -1123,6 +1110,11 @@ def execute_smart_chat_agent(user_message: str, file_data: Optional[Dict[str, An
             time.sleep(2)
             progress_bar.empty()
             status_text.empty()
+            
+            # Clear uploaded files after getting response
+            st.session_state.uploaded_files = {}
+            st.session_state.total_tokens = 0
+            st.session_state.file_uploader_key += 1  # Force file uploader to reset
         
         # Get alias name
         if st.session_state.agent_aliases:
@@ -1211,6 +1203,11 @@ def execute_smart_chat_agent(user_message: str, file_data: Optional[Dict[str, An
             }
         }
         st.session_state.chat_messages.append(error_chat_msg)
+        
+        # Clear uploaded files even on error
+        st.session_state.uploaded_files = {}
+        st.session_state.total_tokens = 0
+        st.session_state.file_uploader_key += 1  # Force file uploader to reset
 
 def display_smart_agent_result(agent_result: Dict[str, Any]):
     """Display agent results with intelligent question detection"""
@@ -1333,27 +1330,116 @@ def display_smart_agent_result(agent_result: Dict[str, Any]):
                 st.write(f"**Trace Event {i+1}:**")
                 st.json(trace_event)
 
+def get_chat_style():
+    return """
+    <style>
+    /* Modern chat container */
+    .chat-container {
+        max-width: 900px;
+        margin: 0 auto;
+        padding: 20px;
+        padding-bottom: 100px;  /* Add padding for input area */
+    }
+    
+    /* Input container at bottom but not fixed */
+    .input-container {
+        background: white;
+        padding: 20px 40px;
+        border-top: 1px solid #e5e5e5;
+        margin-top: 20px;
+    }
+    
+    /* Modern input area */
+    .stTextArea textarea {
+        border-radius: 12px !important;
+        border: 1px solid #e5e5e5 !important;
+        padding: 15px !important;
+        font-size: 16px !important;
+        line-height: 1.5 !important;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05) !important;
+        resize: none !important;
+        min-height: 100px !important;
+    }
+
+    /* Style expander */
+    .streamlit-expanderHeader {
+        font-size: 14px !important;
+        padding: 8px 12px !important;
+        background: none !important;
+        border: none !important;
+        color: #6c757d !important;
+        margin-top: 8px !important;
+    }
+    
+    .streamlit-expanderHeader:hover {
+        background: #f8f9fa !important;
+        border-radius: 8px !important;
+    }
+
+    .streamlit-expanderContent {
+        border: none !important;
+        padding: 10px 0 !important;
+    }
+
+    /* File uploader in expander */
+    .stFileUploader {
+        width: 100% !important;
+        padding: 0 !important;
+    }
+
+    .stFileUploader > div {
+        padding: 0 !important;
+    }
+
+    /* File attachment indicator */
+    .file-indicator {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 8px;
+        background: #f1f3f5;
+        border-radius: 12px;
+        font-size: 12px;
+        color: #495057;
+        margin-right: 8px;
+    }
+    
+    /* Send button */
+    .stButton button {
+        border-radius: 8px !important;
+        padding: 10px 20px !important;
+        font-weight: 500 !important;
+    }
+    
+    /* Chat messages */
+    .chat-message {
+        margin-bottom: 24px;
+        max-width: 85%;
+    }
+    
+    .user-message {
+        margin-left: auto;
+        background: #f1f3f5;
+    }
+    
+    .assistant-message {
+        margin-right: auto;
+        background: white;
+    }
+    
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    </style>
+    """
+
 def display_chat_section():
     """Display intelligent conversational chat interface with agent"""
-    # Chat header with New Chat button and warning
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.header("💬 Chat with Agent")
-    with col2:
-        if st.button("🔄 New Chat", help="Start a new conversation"):
-            st.session_state.chat_messages = []
-            st.session_state.chat_context = {}
-            import uuid
-            st.session_state.chat_session_id = str(uuid.uuid4())
-            st.session_state.waiting_for_user_input = False
-            st.session_state.detected_agent_questions = []
-            st.rerun()
+    # Apply custom styling
+    st.markdown(get_chat_style(), unsafe_allow_html=True)
     
-    if not st.session_state.selected_agent:
-        st.info("Please select an agent first.")
-        return
-
-    # Initialize chat-specific session state
+    # Initialize session state
+    if 'file_uploader_key' not in st.session_state:
+        st.session_state.file_uploader_key = 0
     if 'chat_messages' not in st.session_state:
         st.session_state.chat_messages = []
     if 'chat_alias_id' not in st.session_state:
@@ -1367,99 +1453,100 @@ def display_chat_section():
         st.session_state.waiting_for_user_input = False
     if 'detected_agent_questions' not in st.session_state:
         st.session_state.detected_agent_questions = []
+    if 'uploaded_files' not in st.session_state:
+        st.session_state.uploaded_files = {}
+    if 'total_tokens' not in st.session_state:
+        st.session_state.total_tokens = 0
+    if 'chat_input_key' not in st.session_state:
+        st.session_state.chat_input_key = 0
+    if 'skipped_files' not in st.session_state:
+        st.session_state.skipped_files = []
+
+    # Constants
+    MAX_TOKENS = 100000  # Maximum token limit
     
-    # Display chat messages
+    # Rough token estimation factors for different file types
+    TOKEN_ESTIMATION_FACTORS = {
+        '.txt': 1.3,  # 1 word ≈ 1.3 tokens
+        '.pdf': 1.5,  # PDF might have more special characters
+        '.json': 2.0,  # JSON has more special characters and structure
+        '.csv': 1.2,  # CSV is usually more compact
+        '.md': 1.3,   # Similar to txt
+    }
+
+    # Chat header with New Chat button
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.header("💬 Chat with Agent")
+    with col2:
+        if st.button("🔄 New Chat", help="Start a new conversation"):
+            st.session_state.chat_messages = []
+            st.session_state.chat_context = {}
+            st.session_state.uploaded_files = {}
+            st.session_state.total_tokens = 0
+            st.session_state.skipped_files = []
+            st.session_state.file_uploader_key += 1
+            import uuid
+            st.session_state.chat_session_id = str(uuid.uuid4())
+            st.session_state.waiting_for_user_input = False
+            st.session_state.detected_agent_questions = []
+            st.rerun()
+
+    if not st.session_state.selected_agent:
+        st.info("Please select an agent first.")
+        return
+
+    # Chat messages container
     chat_container = st.container()
+    
     with chat_container:
+        # Display messages
         if not st.session_state.chat_messages:
-            st.info("👋 Start a conversation! Upload files or ask questions directly.")
+            st.markdown("""
+                <div style='text-align: center; color: #6c757d; padding: 40px;'>
+                    <h3>👋 Welcome!</h3>
+                    <p>Start typing or upload files to begin the conversation.</p>
+                </div>
+            """, unsafe_allow_html=True)
         else:
-            for i, message in enumerate(st.session_state.chat_messages):
+            for message in st.session_state.chat_messages:
                 if message.get("is_context"):
-                    # Display system context messages in an elegant way
-                    if "changing agent" in message['content'].lower():
-                        st.markdown("""
-                        <div style='text-align: center; padding: 10px; margin: 10px 0;'>
-                            <div style='color: #666; font-size: 0.9em;'>
-                                🔄 Agent Transition
-                            </div>
-                            <div style='color: #1f77b4; font-size: 0.85em; margin-top: 5px;'>
-                                {}
-                            </div>
+                    st.markdown(f"""
+                        <div style='text-align: center; padding: 10px; color: #6c757d; font-size: 0.9em;'>
+                            {message['content']}
                         </div>
-                        """.format(message['content']), unsafe_allow_html=True)
-                    elif "conversation is long" in message['content'].lower():
-                        st.markdown("""
-                        <div style='text-align: center; padding: 10px; margin: 10px 0;'>
-                            <div style='color: #666; font-size: 0.9em;'>
-                                📜 Conversation History Note
-                            </div>
-                            <div style='color: #666; font-size: 0.85em; margin-top: 5px;'>
-                                {}
-                            </div>
-                        </div>
-                        """.format(message['content']), unsafe_allow_html=True)
-                    else:
-                        st.markdown("""
-                        <div style='text-align: center; padding: 10px; margin: 10px 0;'>
-                            <div style='color: #666; font-size: 0.85em;'>
-                                {}
-                            </div>
-                        </div>
-                        """.format(message['content']), unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
                     continue
                 
                 with st.chat_message(message["role"]):
                     if message["role"] == "user":
                         st.write(message["content"])
                         if message.get("has_file"):
-                            st.caption(f"📎 File: {message.get('file_name', 'Unknown')}")
-                        if message.get("timestamp"):
-                            st.caption(f"🕒 {message['timestamp']}")
-                    else:  # assistant
+                            st.markdown(f"""
+                                <div class='file-indicator'>
+                                    📎 {', '.join(message.get('file_names', []))}
+                                </div>
+                            """, unsafe_allow_html=True)
+                    else:
                         if message.get("agent_result"):
                             display_smart_agent_result(message["agent_result"])
                         else:
                             st.write(message["content"])
-                        if message.get("timestamp"):
-                            st.caption(f"🕒 {message['timestamp']}")
-    
-    # Chat input
-    st.markdown("### Send Message")
-    
-    # Context information (file upload)
-    if st.session_state.processed_file:
-        with st.expander("📁 Current File Context", expanded=False):
-            file_data = st.session_state.processed_file
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.write(f"**File:** {file_data['file_name']}")
-                st.write(f"**Type:** {file_data['file_type']}")
-            
-            with col2:
-                if st.button("📎 Toggle File Context"):
-                    if 'current_file' in st.session_state.chat_context:
-                        del st.session_state.chat_context['current_file']
-                        st.success("File context removed!")
-                    else:
-                        st.session_state.chat_context['current_file'] = file_data
-                        st.success("File context added!")
 
+    # Input container
+    st.markdown("<div class='input-container'>", unsafe_allow_html=True)
+    
     # Input area
     placeholder = "Type your message and press Enter to send..."
     if st.session_state.waiting_for_user_input:
         placeholder = "Answer the agent's questions above..."
+
+    # Input area and send button first
+    st.subheader("Send message")
+
+    cols = st.columns([9, 1])
     
-    # Initialize the input key in session state if not present
-    if 'chat_input_key' not in st.session_state:
-        st.session_state.chat_input_key = 0
-    
-    # Create columns for input and send button
-    input_col, button_col = st.columns([6, 1])
-    
-    with input_col:
-        # Use text_area with a key for Enter to send
+    with cols[0]:
         user_input = st.text_area(
             "Message",
             key=f"chat_input_{st.session_state.chat_input_key}",
@@ -1467,54 +1554,113 @@ def display_chat_section():
             height=100,
             label_visibility="collapsed"
         )
-    
-    with button_col:
-        send_button = st.button("Send", use_container_width=True)
-    
+
+    with cols[1]:
+        send_button = st.button(
+            "Send",
+            key="send_button",
+            type="primary",
+            use_container_width=True
+        )
+
+    # File upload expander after input area
+    with st.expander("📎 Upload files", expanded=False):
+        uploaded_files = st.file_uploader(
+            "Upload files",
+            type=['txt', 'pdf', 'json', 'csv', 'md'],
+            accept_multiple_files=True,
+            label_visibility="collapsed",
+            key=f"chat_file_uploader_{st.session_state.file_uploader_key}"
+        )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    # Handle file uploads
+    if uploaded_files:
+        st.session_state.skipped_files = []  # Reset skipped files list
+        
+        for uploaded_file in uploaded_files:
+            if uploaded_file.name not in st.session_state.uploaded_files:
+                with st.spinner(f"Processing {uploaded_file.name}..."):
+                    file_content = uploaded_file.getvalue()
+                    file_processor = FileProcessor()
+                    
+                    # Process file based on type
+                    processor_map = {
+                        '.txt': file_processor.process_text_file,
+                        '.pdf': file_processor.process_pdf_file,
+                        '.json': file_processor.process_json_file,
+                        '.csv': file_processor.process_csv_file,
+                        '.md': file_processor.process_markdown_file
+                    }
+                    
+                    file_ext = os.path.splitext(uploaded_file.name)[1].lower()
+                    if file_ext in processor_map:
+                        try:
+                            processed_file = processor_map[file_ext](file_content, uploaded_file.name)
+                            if processed_file:
+                                actual_tokens = calculate_file_tokens(processed_file['file_content'], file_ext)
+                                
+                                if st.session_state.total_tokens + actual_tokens <= MAX_TOKENS:
+                                    processed_file['token_count'] = actual_tokens
+                                    st.session_state.total_tokens += actual_tokens
+                                    st.session_state.uploaded_files[uploaded_file.name] = processed_file
+                                    st.success(f"✅ Processed {uploaded_file.name}: {actual_tokens:,} tokens")
+                                else:
+                                    st.session_state.skipped_files.append(uploaded_file.name)
+                                    st.warning(f"⚠️ Skipped {uploaded_file.name}: Would exceed token limit")
+                        
+                        except Exception as e:
+                            st.error(f"❌ Error processing {uploaded_file.name}: {str(e)}")
+                            st.session_state.skipped_files.append(uploaded_file.name)
+
     # Process input when either Enter is pressed or Send button is clicked
     if (user_input and user_input.strip() and (
         (user_input.endswith('\n') and not user_input.endswith('\n\n')) or 
         send_button
     )):
-        # Clean the input
         cleaned_input = user_input.strip()
-        if cleaned_input:
-            # Add user message to chat immediately
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            user_msg = {
-                "role": "user",
-                "content": cleaned_input,
-                "timestamp": timestamp,
-                "has_file": bool(st.session_state.chat_context.get('current_file')),
-                "file_name": st.session_state.chat_context.get('current_file', {}).get('file_name'),
-                "file_data": st.session_state.chat_context.get('current_file'),
-                "is_follow_up": len(st.session_state.chat_messages) > 0
-            }
-            st.session_state.chat_messages.append(user_msg)
-            
-            # Show processing warning
-            st.warning("⚠️ Please wait for the agent to respond. Switching tabs will interrupt the agent's processing.", icon="⚠️")
-            
-            # Execute the agent immediately
-            execute_smart_chat_agent(
-                cleaned_input,
-                st.session_state.chat_context.get('current_file')
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Prepare file data if files were uploaded
+        file_data = None
+        if st.session_state.uploaded_files:
+            combined_content = "\n\n=== FILE SEPARATOR ===\n\n".join(
+                f"File: {filename}\nContent:\n{file_info['file_content']}"
+                for filename, file_info in st.session_state.uploaded_files.items()
             )
-            
-            # Clear the input box
-            st.session_state.chat_input_key += 1
-            st.rerun()
-    
-    # Check if we need to process a message
-    if st.session_state.needs_processing and st.session_state.processing_message:
-        # Process the message
-        execute_smart_chat_agent(
-            st.session_state.processing_message,
-            st.session_state.chat_context.get('current_file')
-        )
-        # Clear processing state
-        st.session_state.needs_processing = False
-        st.session_state.processing_message = None
+            file_data = {
+                'file_type': 'multi',
+                'file_name': ', '.join(st.session_state.uploaded_files.keys()),
+                'file_content': combined_content,
+                'metadata': {
+                    'file_count': len(st.session_state.uploaded_files),
+                    'total_tokens': st.session_state.total_tokens
+                }
+            }
+        
+        # Add message to chat
+        user_msg = {
+            "role": "user",
+            "content": cleaned_input,
+            "timestamp": timestamp,
+            "has_file": bool(st.session_state.uploaded_files),
+            "file_names": list(st.session_state.uploaded_files.keys()) if st.session_state.uploaded_files else [],
+            "file_data": file_data,
+            "is_follow_up": len(st.session_state.chat_messages) > 0
+        }
+        st.session_state.chat_messages.append(user_msg)
+        # logger.info(f"User message: {user_msg}")
+        
+        # Execute agent
+        execute_smart_chat_agent(cleaned_input, file_data)
+        
+        # Clear files and increment keys to force reset
+        st.session_state.uploaded_files = {}
+        st.session_state.total_tokens = 0
+        st.session_state.chat_input_key += 1
+        st.session_state.file_uploader_key += 1
+        st.rerun()
 
 def display_content_with_formatting(content_str: str):
     """Display content with intelligent formatting"""
@@ -1683,19 +1829,16 @@ def main():
         initial_sidebar_state="expanded"
     )
     
-    st.title("🤖 AWS Bedrock Agents - Intelligent Assistant")
-    st.markdown("Interact with your AWS Bedrock Agents for intelligent analysis and assistance.")
-    
     init_session_state()
     
     # AWS Configuration section in sidebar
-    selected_page = setup_sidebar()
+    is_logged_in = setup_sidebar()
     
-    if not selected_page:
+    if not is_logged_in:
         st.info("👈 Please configure your AWS credentials in the sidebar to get started.")
         
         # Show getting started guide
-        with st.expander("🚀 Getting Started Guide"):
+        with st.expander("🚀 Getting Started Guide", expanded=True):
             st.markdown("""
             **Step 1: Configure AWS Credentials**
             - Set up your AWS credentials in the sidebar
@@ -1712,36 +1855,20 @@ def main():
             """)
         return
 
-    # Show content based on selected page
-    if selected_page == "🤖 Agents":
-        display_agents_section()
-    elif selected_page == "📁 File Upload":
-        display_file_upload_section()
-    elif selected_page == "💬 Chat":
-        display_chat_section()
-    elif selected_page == "📈 History":
-        display_history_section()
-    
-    # Show generic info when no agent is selected
-    if not st.session_state.selected_agent:
-        with st.expander("ℹ️ Getting Started"):
-            st.markdown("""
-            **Welcome to AWS Bedrock Agents Interface!**
-            
-            **Step 1:** Configure your AWS credentials in the sidebar  
-            **Step 2:** Select an agent from the Agents tab  
-            **Step 3:** Upload files (optional) in the File Upload tab  
-            **Step 4:** Start chatting with your agent in the Chat tab  
-            
-            **Supported Features:**
-            - 🤖 Intelligent AI agents
-            - 📚 Knowledge base integration  
-            - ⚡ Action group execution
-            - 📁 File processing (TXT, PDF, JSON, CSV, MD)
-            - 💬 Conversational interface
-            - 🔍 Detailed tracing and debugging
-            """)
+    # Main title
+    st.title("🤖 AWS Bedrock Agents - Intelligent Assistant")
+    st.markdown("Interact with your AWS Bedrock Agents for intelligent analysis and assistance.")
 
+    # Display content based on selected page
+    if st.session_state.selected_page == "🤖 Agents":
+        display_agents_section()
+    elif st.session_state.selected_page == "💬 Chat":
+        if not st.session_state.selected_agent:
+            st.warning("⚠️ Please select an agent in the Agents section first.")
+        else:
+            display_chat_section()
+    elif st.session_state.selected_page == "📈 History":
+        display_history_section()
 
 if __name__ == "__main__":
     main()
